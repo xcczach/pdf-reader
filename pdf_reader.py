@@ -1,6 +1,7 @@
 from typing import TypedDict
 import pymupdf
 from PIL import Image
+from io import BytesIO
 
 
 class PDFMetadata(TypedDict):
@@ -8,41 +9,56 @@ class PDFMetadata(TypedDict):
     format: str
     encryption: str | None
     author: str | None
-    mod_data: str
     keywords: str
     title: str
-    creation_date: str
+    creationDate: str
+    modDate: str
     creator: str
     subject: str
+    trapped: str
+
+
+class PDFLink(TypedDict):
+    kind: int
+    xref: int
+    page: int
+    to: pymupdf.Point
+    zoom: float
+    id: str
+    rect: pymupdf.Rect
+    uri: str
 
 
 class PDFReader:
     def __init__(self, path: str) -> None:
-        self.doc = pymupdf.open(path)
+        self._doc = pymupdf.open(path)
 
     @property
     def metadata(self) -> PDFMetadata:
-        pass
+        return self._doc.metadata
 
     @property
     def text(self) -> str:
-        return self._get_or_compute("_text", lambda: self.doc.get_text())
+        def _get_text():
+            text = ""
+            for page in self._doc:
+                text += page.get_text().encode("utf-8").decode("utf-8")
+            return text
+
+        return self._get_or_compute("_text", _get_text)
 
     @property
     def images(self) -> list[Image.Image]:
         def _get_images():
             images = []
-            for page in self.doc:
+            for page in self._doc:
                 images.extend(page.get_images())
             result = []
             for img in images:
                 xref = img[0]
-                pix = pymupdf.Pixmap(self.doc, xref)
-                if pix.n - pix.alpha > 3:
-                    pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
-                result.append(
-                    Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                )
+                pix = self._doc.extract_image(xref)
+                pix = pix["image"]
+                result.append(Image.open(BytesIO(pix)))
             return result
 
         return self._get_or_compute("_images", _get_images)
@@ -51,7 +67,7 @@ class PDFReader:
     def tables(self) -> list:
         def _get_tables():
             tables = []
-            for page in self.doc:
+            for page in self._doc:
                 tables.extend(map(lambda x: x.to_pandas(), page.find_tables().tables))
             return tables
 
@@ -61,11 +77,10 @@ class PDFReader:
     def links(self) -> list:
         def _get_links():
             links = []
-            for page in self.doc:
-                link = page.first_link
-                while link:
+            for page in self._doc:
+                for link in page.links():
+                    link["rect"] = link["from"]
                     links.append(link)
-                    link = link.next
             return links
 
         return self._get_or_compute("_links", _get_links)
@@ -74,7 +89,7 @@ class PDFReader:
     def annotations(self) -> list:
         def _get_annotations():
             annotations = []
-            for page in self.doc:
+            for page in self._doc:
                 annotations.extend(page.annots())
             return annotations
 
